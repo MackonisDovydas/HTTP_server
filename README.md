@@ -2,7 +2,7 @@
 ## To init project
   1. Write make to execute makefile
   2. Launch executable server and pick a port
-  HTTP default port should be 80, but Ports 1024 and below are Privileged Ports
+<br/>HTTP default port should be 80, but Ports 1024 and below are Privileged Ports
   Ports above 1024 are Emphemeral Ports.
   
  ## To use
