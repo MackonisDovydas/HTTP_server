@@ -7,6 +7,7 @@
 #include <pthread.h>
 #include <cstring>
 #include <csignal>
+#include <regex>
 #include <fstream>
 #include <sys/stat.h>
 
@@ -72,26 +73,26 @@ void stop_server(connection_info connection[])
     exit(0);
 }
 
-std::string check_request(message msgGet)
+message check_request(message msgGet)
 {
-    int count=0;
     std::string request = msgGet.request;
-    for(int i=0;i<request.length();i++){
-        if(isspace(request.at(i))){
-            count++;
-        }
+    int newLine = request.find('\n');
+    request = request.substr(0,newLine-1);
+    std::string method_name;
+    method_name = request.substr(0,4);
+    if (method_name == "GET ") {
+        msgGet.type = GET;
     }
-    if(count !=2){
-        request = "HTTP/1.0 400 Bad Request";
-        return request;
+    else if (method_name == "POST") {
+        msgGet.type = POST;
+    }
+    else if (method_name == "HEAD") {
+        msgGet.type = HEAD;
     }
     else {
-        std::string method_name;
-        method_name = request.substr(0,4);
-        if(method_name !="POST" && method_name != "HEAD" && method_name.substr(0, method_name.size()-1) != "GET"){
-                request = "HTTP/1.0 501 Method Not Implemented";
-                return request;
-        }
+        request = "HTTP/1.0 501 Method Not Implemented";
+        strcpy(msgGet.request,request.c_str());
+        return msgGet;
     }
     request.erase(0,4);
     if(request.at(0)==' '){
@@ -100,20 +101,23 @@ std::string check_request(message msgGet)
     int pos=request.find(' ',0);
     std::string request_URI=request.substr(0,pos);
     std::string HTTP_version=request.substr(pos+1, request.length());
-    if(HTTP_version!= "HTTP/1.0" || request_URI.front()!= '/'){
+    if(HTTP_version!= "HTTP/1.0" && HTTP_version!= "HTTP/1.1" && HTTP_version!= "HTTP/0.9"){
         request = "HTTP/1.0 400 Bad Request";
-        return request;
+        strcpy(msgGet.request,request.c_str());
+        return msgGet;
     }
     request_URI.erase(0, 1);
 
     std::ifstream file(request_URI);
     if(file.is_open() == 0){
         request = "HTTP/1.0 404 Not Found";
-        return request;
+        strcpy(msgGet.request,request.c_str());
+        return msgGet;
     }
     file.close();
     request = "HTTP/1.0 200 OK";
-    return request;
+    strcpy(msgGet.request,request.c_str());
+    return msgGet;
 }
 std::string get_file(std::string request_URI)
 {
@@ -131,24 +135,30 @@ std::string get_file(std::string request_URI)
     }
     return str;
 }
+int get_file_size(std::string request_URI)
+{
+    int size;
+    std::ifstream file(request_URI, std::ios::binary | std::ios::ate);
+    if (file.is_open()) {
+        size=file.tellg();
+        file.close();
+    }
+    else {
+        perror("File not found");
+        size=0;
+    }
+    return size;
+}
 std::string process_request(message msgGet)
 {
     std::string request = msgGet.request;
-    std::string method_name = request.substr(0,4);
-    request.erase(0,4);
-    int pos=request.find(' ',0);
-    std::string request_URI=request.substr(0,pos);
-    std::string HTTP_version=request.substr(pos+1);
+    int newLine = request.find('\n');
+    request = request.substr(0,newLine);
+    request.erase(0, 4);
+    int pos = request.find(' ', 0);
+    std::string request_URI = request.substr(0, pos);
+    std::string HTTP_version = request.substr(pos + 1);
     request_URI.erase(0, 1);
-    if(method_name == "GET "){
-        msgGet.type=GET;
-    }
-    else if(method_name == "POST"){
-        msgGet.type=POST;
-    }
-    else if(method_name == "HEAD"){
-        msgGet.type=HEAD;
-    }
     std::string add_to_request;
     switch (msgGet.type){
         case GET:
@@ -162,35 +172,79 @@ std::string process_request(message msgGet)
         case POST:
             break;
     }
-    if(add_to_request.empty()){
-        return "HTTP/1.0 200 OK";
+    if(!add_to_request.empty()){
+
+        return add_to_request;
     }
     else{
-        std::string str="HTTP/1.0 200 OK";
-        str.append(2u,'\n');
-        return str + add_to_request;
+        return "";
     }
+}
+std::string add_header(message msgGet)
+{
+    time_t now = time(0);
+    tm *gmt = gmtime(&now);
+    std::string date = asctime(gmt);
+    date = date.substr(0, date.length() - 1);
+    date.append(" GMT");
+    std::string server = "Testo";
+    std::string content_type;
+    int content_length;
+    if(msgGet.type == GET) {
+        content_type = "text/plain";
+        std::string request = msgGet.request;
+        int newLine = request.find('\n');
+        request = request.substr(0, newLine - 1);
+        request.erase(0, 4);
+        if (request.at(0) == ' ') {
+            request.erase(0, 1);
+        }
+        int pos = request.find(' ', 0);
+        std::string request_URI = request.substr(0, pos);
+        request_URI.erase(0, 1);
+        content_length=get_file_size(request_URI);
+    }
+    std::string header;
+    header.append("Date: "+ date + '\n');
+    header.append("Server: "+ server + '\n');
+    if(!content_type.empty()){
+        header.append("Content-Type: "+ content_type + '\n');
+        header.append("Content-Length: "+ std::to_string(content_length) + '\n');
+    }
+    return header;
 }
 void handle_client_message(connection_info clients[], int sender) {
     int read_size;
     message msgGet;
 
     //ssize_t recv(int s, void *buf, size_t len, int flags);
-    if ((read_size = recv(clients[sender].socket,(void*)&msgGet, sizeof(message), 0)) == 0) {
+    if ((read_size = recv(clients[sender].socket,(void*)&msgGet.request, sizeof(message), 0)) == 0) {
         close(clients[sender].socket);
         clients[sender].socket = 0;
     }
     else {
-        std::cout <<msgGet.request<< std::endl;
+        std::cout <<"1 "<<msgGet.request<< std::endl;
         message msgBack;
         std::string str;
-        str = check_request(msgGet);
-        strcpy(msgBack.request, str.c_str());
+        std::string file_contents;
+        std::string header;
+        std::string response;
+        msgBack = check_request(msgGet);
+        msgGet.type=msgBack.type;
+        str=msgBack.request;
+        header=add_header(msgGet);
         if(str == "HTTP/1.0 200 OK") {
-            strcpy(msgBack.request, process_request(msgGet).c_str());
+            file_contents = process_request(msgGet);
         }
-        //strcpy(msgBack.request, "HTTP/1.0 200 OK");
-        if (send(clients[sender].socket, &msgBack, sizeof(message), 0) == -1) {
+        response=msgBack.request;
+        response.append('\n' + header + '\n');
+        if(!file_contents.empty()) {
+            response.append(file_contents + '\n');
+            //file_contents = compress(file_contents);
+        }
+        strcpy(msgBack.request,response.c_str());
+        std::cout<<"2 "<<msgBack.request<<std::endl;
+        if (send(clients[sender].socket, &msgBack.request, sizeof(message), 0) == -1) {
             perror("Send failed");
             exit(1);
         }
