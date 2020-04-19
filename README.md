@@ -1,4 +1,4 @@
-# HTTP-1.0_protocol
+# HTTP_protocol
 ## To init project
   1. Write make to execute makefile
   2. Launch executable server and pick a port
