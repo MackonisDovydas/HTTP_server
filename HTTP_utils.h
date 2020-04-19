@@ -22,8 +22,14 @@ enum message_type
     HEAD,
     POST,
 };
+enum file_format
+{
+    HTML,
+    JPG
+};
 struct message
 {
     message_type type;
-    char request[10000];
+    file_format format;
+    char request[1000000];
 };

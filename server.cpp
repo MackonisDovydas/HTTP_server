@@ -13,7 +13,7 @@
 
 #include "HTTP_utils.h"
 
-#define MAX_CLIENTS 10
+#define MAX_CLIENTS 1000
 
 
 static volatile int keepRunning = 1;
@@ -90,7 +90,7 @@ message check_request(message msgGet)
         msgGet.type = HEAD;
     }
     else {
-        request = "HTTP/1.0 501 Method Not Implemented";
+        request = "HTTP/1.1 501 Method Not Implemented";
         strcpy(msgGet.request,request.c_str());
         return msgGet;
     }
@@ -102,27 +102,37 @@ message check_request(message msgGet)
     std::string request_URI=request.substr(0,pos);
     std::string HTTP_version=request.substr(pos+1, request.length());
     if(HTTP_version!= "HTTP/1.0" && HTTP_version!= "HTTP/1.1" && HTTP_version!= "HTTP/0.9"){
-        request = "HTTP/1.0 400 Bad Request";
+        request = "HTTP/1.1 400 Bad Request";
         strcpy(msgGet.request,request.c_str());
         return msgGet;
     }
     request_URI.erase(0, 1);
 
+    if(request_URI.find(".html") != std::string::npos){
+        msgGet.format = HTML;
+    }
+    else if(request_URI.find(".jpeg") != std::string::npos || request_URI.find(".jpg") != std::string::npos){
+        msgGet.format=JPG;
+    }
+    else{
+        request_URI.append(".html");
+        msgGet.format = HTML;
+    }
     std::ifstream file(request_URI);
     if(file.is_open() == 0){
-        request = "HTTP/1.0 404 Not Found";
+        request = "HTTP/1.1 404 Not Found";
         strcpy(msgGet.request,request.c_str());
         return msgGet;
     }
     file.close();
-    request = "HTTP/1.0 200 OK";
+    request = "HTTP/1.1 200 OK";
     strcpy(msgGet.request,request.c_str());
     return msgGet;
 }
 std::string get_file(std::string request_URI)
 {
     std::string str;
-    std::ifstream file(request_URI);
+    std::ifstream file(request_URI, std::ios::binary);
     if (file.is_open()) {
         char c;
         while (file.get(c)) {
@@ -159,6 +169,9 @@ std::string process_request(message msgGet)
     std::string request_URI = request.substr(0, pos);
     std::string HTTP_version = request.substr(pos + 1);
     request_URI.erase(0, 1);
+    if (request_URI.find('.') == std::string::npos) {
+        request_URI.append(".html");
+    }
     std::string add_to_request;
     switch (msgGet.type){
         case GET:
@@ -182,16 +195,15 @@ std::string process_request(message msgGet)
 }
 std::string add_header(message msgGet)
 {
-    time_t now = time(0);
-    tm *gmt = gmtime(&now);
-    std::string date = asctime(gmt);
-    date = date.substr(0, date.length() - 1);
-    date.append(" GMT");
-    std::string server = "Testo";
     std::string content_type;
     int content_length;
     if(msgGet.type == GET) {
-        content_type = "text/plain";
+        if(msgGet.format == HTML) {
+            content_type = "text/html";
+        }
+        else if (msgGet.format == JPG){
+            content_type = "image/jpeg";
+        }
         std::string request = msgGet.request;
         int newLine = request.find('\n');
         request = request.substr(0, newLine - 1);
@@ -202,11 +214,12 @@ std::string add_header(message msgGet)
         int pos = request.find(' ', 0);
         std::string request_URI = request.substr(0, pos);
         request_URI.erase(0, 1);
+        if (request_URI.find('.') == std::string::npos) {
+            request_URI.append(".html");
+        }
         content_length=get_file_size(request_URI);
     }
     std::string header;
-    header.append("Date: "+ date + '\n');
-    header.append("Server: "+ server + '\n');
     if(!content_type.empty()){
         header.append("Content-Type: "+ content_type + '\n');
         header.append("Content-Length: "+ std::to_string(content_length) + '\n');
@@ -218,7 +231,7 @@ void handle_client_message(connection_info clients[], int sender) {
     message msgGet;
 
     //ssize_t recv(int s, void *buf, size_t len, int flags);
-    if ((read_size = recv(clients[sender].socket,(void*)&msgGet.request, sizeof(message), 0)) == 0) {
+    if ((read_size = recv(clients[sender].socket,(void*)&msgGet.request, sizeof(msgGet.request), 0)) == 0) {
         close(clients[sender].socket);
         clients[sender].socket = 0;
     }
@@ -231,20 +244,18 @@ void handle_client_message(connection_info clients[], int sender) {
         std::string response;
         msgBack = check_request(msgGet);
         msgGet.type=msgBack.type;
+        msgGet.format = msgBack.format;
         str=msgBack.request;
         header=add_header(msgGet);
-        if(str == "HTTP/1.0 200 OK") {
+        if(str == "HTTP/1.1 200 OK") {
             file_contents = process_request(msgGet);
         }
         response=msgBack.request;
         response.append('\n' + header + '\n');
         if(!file_contents.empty()) {
             response.append(file_contents + '\n');
-            //file_contents = compress(file_contents);
         }
-        strcpy(msgBack.request,response.c_str());
-        std::cout<<"2 "<<msgBack.request<<std::endl;
-        if (send(clients[sender].socket, &msgBack.request, sizeof(message), 0) == -1) {
+        if (send(clients[sender].socket, response.data(), response.length(), 0) == -1) {
             perror("Send failed");
             exit(1);
         }
@@ -358,7 +369,7 @@ int main(int argc, char *argv[]) {
             {
                 handle_client_message(clients, i);
                 close(clients[i].socket);
-                clients[i].socket = 0;
+                clients[i].socket = -1;
             }
         }
     }
